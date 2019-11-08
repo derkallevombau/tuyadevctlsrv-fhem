@@ -1,0 +1,6 @@
+log
+node_modules
+.vstags
+config.json
+jsconfig.json
+tsconfig.json

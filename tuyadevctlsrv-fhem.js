@@ -35,12 +35,6 @@ const loggerConfig =
 			type: 'stdout',
 			layout: { type: 'pattern', pattern: `%[${logPattern}%]` }
 		},
-		myLogs:
-		{
-			type: 'dateFile', filename: '/home/kalle/myLogs/tuyadevctlsrv-fhem/tuyadevctlsrv.log', pattern: '.yyyy-MM',
-			alwaysIncludePattern: true, keepFileExt: true,
-			layout: { type: 'pattern', pattern: `%[${logPattern}%]` }
-		},
 		fhemLogs:
 		{
 			type: 'dateFile', filename: './log/tuyadevctlsrv-fhem.log', pattern: '.yyyy-MM',
@@ -50,7 +44,7 @@ const loggerConfig =
 	},
 	categories:
 	{
-		default:            { appenders: [], level: 'debug' }, // Dummy. Not used, but Log4js complains if not defined
+		default:            { appenders: ['fhemLogs'], level: 'debug' }, // Dummy. Not used, but Log4js complains if not defined
 		tuyadevctlsrv_fhem: { appenders: ['stdout', 'myLogs', 'fhemLogs'], level: 'debug' },
 		fhem_client:        { appenders: ['stdout', 'myLogs', 'fhemLogs'], level: 'debug' }
 	}

@@ -1,28 +1,167 @@
 #!/usr/bin/env node
+//#!/usr/bin/node --inspect-brk=0.0.0.0:9229
 
-/*
- * tuyadevctlsrv.js
- *
+/**
+ * @file tuyadevctlsrv.js
  * Created on: Sep 18, 2019
- * Author    : derkallevombau
+ * @author derkallevombau
  */
 
-// N.B.: - 'for ... of Array' iterates over elements.
-//		 - 'for ... in Object' iterates over property names (cf. iterating over hash keys in Perl).
-//		 - 'for ... of Object' iterates over property values (cf. iterating over hash values in Perl).
-//		 - 'let' scopes variable to block, as opposed to 'var' which scopes to function body.
-// N.B.: JS's boolean evaluation of non-boolean expressions works like Perl's:
-//		 - undefined, null, '' and 0 are evaluated to false.
-//		 - (non-null) references, non-empty strings and numbers !== 0 are evaluated to true.
+/*
+ * A JS beginner's notes on JS in general and in particular w.r.t. Perl
+ *
+ * 1) Loops
+ *
+ *    a) 'for (const e of a: any[])' iterates over array elements.
+ *    b) 'for (const i in a: any[])' iterates over array indices (which are actually property names of an array object).
+ *    c) 'for (const pn in o: object)' iterates over property names. Cf. Perl: 'for (keys %h)'.
+ *    d) 'for (const pv of Object.values(o))' iterates over property values. Cf. Perl: 'for (values %h)'.
+ *
+ *    Explanation: Although it seems reasonable, 'for (const pv of o: object)' for iterating over property values
+ *    works for objects implementing an iterator only, not for sth. like '{a: 1, b: 2 }'.
+ *    Instead, we can use 'Object.values(o)' to obtain an array of the object's values, as we do in Perl.
+ *
+ * 2) Determine type
+ *
+ *    a) s = 'abc'; typeof s === 'string'; s instanceof String === false (s is a primitive, no object type. Same holds for the following two.)
+ *    b) n = 99; typeof n === 'number'
+ *    c) b = true; typeof b === 'boolean'
+ *    d) o = { a: 1, b: 2 }; typeof o === 'object'; o instanceof Object === true
+ *    e) a = [1, 2, 3]; typeof a === 'object' (arrays are objects); a instanceof Array === true
+ *    f) r = /./; typeof r === 'object'; r instanceof RegExp === true
+ *
+ * 3) RegExp with interpolation
+ *
+ *    In Perl, we can do sth. like 'my $r = qr/^$s$/;' or '<expr> =~ /^$s$/'.
+ *    In JS, using the literal form, everything inside /.../ is taken literally, but we can use 'RegExp(pattern: string | RegExp, flags?: string)'
+ *    to obtain a RegExp from an interpolated string.
+ *
+ * 4) Scoping
+ *
+ *    'let' and 'const' in function body scope variable to respective block, as opposed to older 'var' which scopes to function body.
+ *
+ * 5) Boolean evaluation
+ *
+ *    JS's boolean evaluation of non-boolean expressions works like Perl's:
+ *
+ *    a) undefined, null, '' and 0 are evaluated to false.
+ *    b) (non-null) references, non-empty strings and numbers !== 0 are evaluated to true.
+ *
+ * 6) Merging arrays and objects
+ *
+ *    a) Merging arrays: [ ...a1, ...a2 ]. Cf. Perl: [ @$a1, @$a2 ] (regarding array refs to emphasise the parallels).
+ *       In JS, we need to apply the spread operator to insert the array contents, not the reference.
+ *       Similarly, in Perl, we need to dereference the array ref, yielding a (direct) array which can be inserted into a list
+ *       like a literal list, and e. g. '[ 1, (1, 2)]' is the same as '[1, 2, 3]'.
+ *
+ *    b) Merging objects: { ...o1, ...o2 }. Cf. hash in Perl: { %$h1, %$h2 } (again regarding hash refs to emphasise the parallels).
+ *       In JS, the spread operator "decomposes" objects as it decomposes arrays.
+ *       In Perl, we dereference the hash ref, yielding a (direct) hash which can be inserted into a list
+ *       like a literal list, because a literal hash is just an even-sized list.
+ *
+ * 7) Statics
+ *
+ *    a) Static (class) variables:
+ *
+ *       i)  Just use '<class name>.<varname>' instead of 'this.<varname>' as for instance variables:
+ *
+ *           class A { constructor() { if (A.n === undefined) A.n = 0; A.n++; } getInstanceCount() { return A.n; } }
+ *           a1 = new A(); a1.getInstanceCount() // returns 1
+ *           a2 = new A(); a2.getInstanceCount() // returns 2
+ *           a1.getInstanceCount()               // returns 2
+ *
+ *       ii) In a more familiar fashion using 'static' keyword, allowing immediate initialisation. Can be used for static (class) methods as well.
+ *           class A { static n = 0; constructor() { A.n++; } getInstanceCount() { return A.n; } }
+ *
+ *    b) Static local variables: Since functions are objects, a) i) can be used. ii) Works for classes only.
+ *
+ *       function f() { if (f.alreadyCalled) return 'Subsequent call'; f.alreadyCalled = true; return 'First call'; }
+ *       f() // returns 'First call'
+ *       f() // returns 'Subsequent call'
+ *
+ */
 
-const TuyAPI = require('tuyapi');
-const log4js = require('log4js');
-const http = require('http');
-const fs = require('fs');
-const path = require('path').posix;
-const assert = require('assert').strict;
+/**
+ * We need this because /usr/bin/env in the shebang
+ * causes the process title to be the name of the
+ * interpreter, not that of the script.
+ */
+process.title = 'tuyadevctlsrv-fhem';
 
-const FhemClient = require("./fhem-client");
+const fhemLogLogger = require('./lib/fhemLogLogger');
+
+/**
+ * Initially set to fhemLogLogger.
+ * Set to log4js logger as soon as log4js has been configured,
+ * which is done after command line args have been processed
+ * since they can change default logger config.
+ * @type log4js.Logger
+ */
+// @ts-ignore
+let logger = fhemLogLogger;
+
+/**
+ * @type http.Server
+ */
+let server;
+
+/**
+ * @type FhemClient
+ */
+let fhemClient;
+
+let tuyaMasterName;
+
+const exitInfoFilePath  = './.tuyadevctlsrv-fhem/exit.info';
+
+process.on('exit', code => logger.info(`Exited with code ${code} (PID: ${process.pid}).`));
+
+process.on('uncaughtException', // Although doc implies, this doesn't cover unhandledRejection.
+	(e, origin) =>
+	{
+		process.exitCode = -1;
+
+		logger.error(`${origin}:`, e);
+
+		shutdown(origin, e.code, e.message);
+	}
+);
+
+process.on('unhandledRejection',
+	(reason/*, promise*/) => // reason is what the Promise has been rejected with.
+	{
+		process.exitCode = -1;
+
+		logger.error('unhandledRejection:', reason); // reason and promise contain exactly the same message and call trace.
+
+		let code, message;
+
+		if (reason instanceof Error)
+		{
+			// @ts-ignore
+			code    = reason.code;
+			message = reason.message;
+		}
+		else
+		{
+			code    = undefined;
+			message = reason;
+		}
+
+		// @ts-ignore
+		shutdown('unhandledRejection', code, message);
+	}
+);
+
+const TuyAPI   = require('tuyapi');
+const log4js   = require('log4js');
+const http     = require('http');
+const fs       = require('fs');
+const path     = require('path').posix;
+const assert   = require('assert').strict;
+
+const FhemClient = require("fhem-client");
+const CmdLineUtil = require("./lib/cmdline-util");
 
 const logPattern = '%d{yyyy-MM-dd hh:mm:ss.SSS} %5.10p %c: %m';
 
@@ -44,15 +183,13 @@ const loggerConfig =
 	},
 	categories:
 	{
-		default:            { appenders: ['fhemLogs'], level: 'debug' }, // Dummy. Not used, but Log4js complains if not defined
-		tuyadevctlsrv_fhem: { appenders: ['stdout', 'myLogs', 'fhemLogs'], level: 'debug' },
-		fhem_client:        { appenders: ['stdout', 'myLogs', 'fhemLogs'], level: 'debug' }
+		default:            { appenders: ['stdout', 'fhemLogs'], level: 'debug' }, // Dummy. Not used, but Log4js complains if not defined
+		tuyadevctlsrv_fhem: { appenders: ['stdout', 'fhemLogs'], level: 'debug' },
+		fhem_client:        { appenders: ['stdout', 'fhemLogs'], level: 'debug' }
 	}
 };
 
-let logger;
-
-let configFilePath = '.tuyadevctlsrv-fhem/config.json';
+const configFilePath = './.tuyadevctlsrv-fhem/config.json';
 
 const config =
 {
@@ -66,19 +203,13 @@ const config =
 		fhem:
 		{
 			url: "http://localhost:8083/fhem",
-			username: undefined,
-			password: undefined
+			username: '',
+			password: ''
 		},
 		devices: []
-	}
+	},
+	cmdLine: { server: {}, fhem: {} }
 };
-
-let server;
-
-/**
- * @type FhemClient
- */
-let fhemClient;
 
 /**
  * @typedef {{
@@ -122,71 +253,66 @@ let blindCalibrationPhase;
 
 function processCmdLineArgs()
 {
-	const opts = new Map(); // Value indicates if opt needs a value.
-
-	opts.set('--server-host', true);
-	opts.set('--server-port', true);
-	opts.set('--fhem-url', true);
-	opts.set('--fhem-user', true);
-	opts.set('--fhem-pass', true);
-	opts.set('--no-log-stdout', false);
-	opts.set('--log-level', true);
-
-	let opt, value;
-
-	for (let arg of process.argv.slice(2))
-	{
-		if (!opts.has(arg) && opt === undefined)
+	const cmdLineUtil = new CmdLineUtil(
+		{ names: '--server-host -H', processValue: value => config.cmdLine.server.host = value },
+		{ names: '--server-port -P', processValue: value => config.cmdLine.server.port = value },
+		{ names: '--fhem-url -U', processValue: value => config.cmdLine.fhem.url = value },
+		{ names: '--fhem-user -u', processValue: value => config.cmdLine.fhem.username = value },
+		{ names: '--fhem-pass -p', processValue: value => config.cmdLine.fhem.password = value },
 		{
-			console.error('Invalid command line argument:', arg);
-
-			process.exit(1);
-		}
-
-		if (!opts.has(arg)) // arg is value for opt
-		{
-			value = arg;
-		}
-		else if (opts.get(arg)) // arg is option that needs a value; store opt and process in next iteration.
-		{
-			opt = arg;
-
-			continue;
-		}
-		// else arg is options that doesn't need a value
-
-		switch (opt)
-		{
-			case '--server-host': config.cmdLine.server.host   = value; break;
-			case '--server-port': config.cmdLine.server.port   = value; break;
-			case '--fhem-url':    config.cmdLine.fhem.url      = value; break;
-			case '--fhem-user':   config.cmdLine.fhem.username = value; break;
-			case '--fhem-pass':   config.cmdLine.fhem.password = value; break;
-			case '--no-log-stdout':
+			names: '--no-log-stdout -n',
+			action: () =>
+			{
 				delete loggerConfig.appenders.stdout;
 
-				// @ts-ignore
-				for (let cat of loggerConfig.categories) cat.appenders.shift(); // Well-known friend from Perl, among unshift(), pop() and push() ;)
+				// Remove stdout appender (first element) from each category.
+				for (const cat of Object.values(loggerConfig.categories)) cat.appenders.shift(); // Well-known friend from Perl, among unshift(), pop() and push() ;)
+			}
+		},
+		{
+			names: '--log-level -l',
+			processValue: value => // Format: '<level>' (applied to all) or '<cat1Name>:<level1>[,<cat2Name>:<level2>]'
+			{
+				/**
+				 * @type Array
+				 */
+				const values = value.split(',');
 
-				break;
-			case '--log-level':
-				// @ts-ignore
-				for (let cat of loggerConfig.categories) cat.level = value;
+				// If multiple sub-args are supplied, each must specify a logger cat and a level.
+				if (values.length > 1 && values.findIndex(v => !v.match(':')) !== -1)
+				{
+					cmdLineUtil.error(`Invalid value for option '--log-level -l': '${value}'.`);
+				}
 
-				break;
-		}
-	}
+				if (values.length == 1 && !value.match(':')) // Set same level for all cats.
+				{
+					for (const cat of Object.values(loggerConfig.categories)) cat.level = value;
+				}
+				else // Set levels individually.
+				{
+					for (const catNameAndLevel of values.map(v => v.split(':')))
+					{
+						const catName = catNameAndLevel[0];
+						const cat     = loggerConfig.categories[catName];
 
-	log4js.configure(loggerConfig);
+						if (!cat)
+						{
+							cmdLineUtil.error(`Invalid logger category: '${catName}'`);
+						}
 
-	logger = log4js.getLogger('tuyadevctlsrv_fhem');
+						cat.level = catNameAndLevel[1];
+					}
+				}
+			}
+		},
+	);
 
-	logger.debug('Command line:', process.argv.join(' '));
+	cmdLineUtil.process();
 }
 
 function readConfig()
 {
-	logger.info(`Reading config data from '${configFilePath}'...`);
+	logger.info(`Reading config data from ${configFilePath}...`);
 
 	let readSuccess = true;
 
@@ -196,78 +322,72 @@ function readConfig()
 	}
 	catch (e)
 	{
-		logger.error(`Error reading config: '${e.message}'; using default config.`);
+		logger.error(`Error reading config: ${e.message}; using default config.`);
 
 		// // Copy config.default to config.current (using spread operator on object literal).
 		// //
 		// config.current = { ...config.default };
 
+		config.current = config.default;
+
 		readSuccess = false;
 	}
 
-	// Check if config read from file is complete
+	// Check if config read from file is complete and take missing settings from config.default
 	if (readSuccess)
-		for (let propName in config.default)
+		for (const confName in config.default)
 		{
-			if (!config.current[propName])
-			{
-				if (propName !== 'devices') logger.error(`Config file doesn't contain ${propName} config, using default.`);
+			if (confName === 'devices') continue;
 
-				config.current[propName] = config.default[propName];
+			if (!config.current[confName])
+			{
+				logger.warn(`Config file doesn't contain ${confName} config, using default.`);
+
+				config.current[confName] = config.default[confName];
 			}
-
-			if (config.cmdLine[propName])
+			else // Check if config.current[confName] is complete
 			{
-				config.current[propName] = config.cmdLine[propName];
+				for (const settingName in config.default[confName])
+				{
+					if (!config.current[confName][settingName]) // We have no setting for which 0 or '' would be a valid value.
+					{
+						logger.warn(`Config file doesn't contain ${settingName} setting from ${confName} config, using default.`);
+
+						config.current[confName][settingName] = config.default[confName][settingName];
+					}
+				}
 			}
 		}
 
 	// Command line options take precedence
-	for (let propName in config.cmdLine) config.current[propName] = config.cmdLine[propName];
+	for (const confName in config.cmdLine)
+		for (const settingName in config.cmdLine[confName])
+		{
+			logger.info(`Permanently using ${confName}.${settingName} = ${config.cmdLine[confName][settingName]} specified via command line.`);
 
-	for (let propName in config.current) if (propName !== 'devices') logger.info(`Using ${propName} config:\n`, config.current[propName]);
+			config.current[confName][settingName] = config.cmdLine[confName][settingName];
+		}
+
+	for (const confName in config.current) if (confName !== 'devices') logger.debug(`Using ${confName} config:\n ${JSON.stringify(config.current[confName], null, 4)}`);
 
 	devices = config.current.devices;
 
-	fhemClient = new FhemClient(config.current.fhem, log4js.getLogger('fhem_client'));
-
-	const devNames = devices.map(device => device.name).join(', '); // Two well-known friends from Perl ;)
-
-	logger.info(`We have ${devices.length} devices: ${devNames}.`);
-}
-
-function writeConfig()
-{
-	logger.info(`Writing config data to '${configFilePath}'...`);
-
-	if (!fs.existsSync(path.dirname(configFilePath)))
+	if (devices.length)
 	{
-		const dir = path.dirname(configFilePath);
+		const devDescs = devices.map(
+			device =>
+			{
+				const opts = device.tuyapiCtorOpts;
 
-		logger.info(`Creating dir '${dir}'...`);
+				return `${device.name} (type: ${device.type}, ${opts.ip ? `IP: ${opts.ip}` : `ID: ${opts.id}`}, key: ${opts.key})`;
+			}
+		).join('\n'); // Two well-known friends from Perl ;)
 
-		try
-		{
-			fs.mkdirSync(dir);
-		}
-		catch (e)
-		{
-			logger.error(`Error creating dir '${dir}': '${e.message}'; using cwd: '${process.cwd()}'`);
+		const multi = devices.length > 1;
 
-			configFilePath = path.join(process.cwd(), path.basename(configFilePath));
-		}
+		logger.debug(`We have ${devices.length} device${multi ? 's': ''}:${multi ? '\n' : ' '}${devDescs}.`);
 	}
-
-	for (let device of devices) if (device.api) deinitDevice(device);
-
-	try
-	{
-		fs.writeFileSync(configFilePath, JSON.stringify(config.current, null, 4), 'utf8');
-	}
-	catch (e)
-	{
-		logger.error(`Error writing config: '${e.message}'; dumping to log:\n`, config.current);
-	}
+	else logger.debug('We have no devices.');
 }
 
 /**
@@ -286,7 +406,7 @@ function initDevice(device)
 
 	// Set device error event handler before calling 'find()' or 'connect()'
 	// so it can handle exceptions thrown during execution of these functions.
-	device.api.on('error', error => onDeviceError(device, error));
+	device.api.on('error', e => onDeviceError(device, e));
 
 	device.api.on('connected', () => onDeviceConnected(device));
 	device.api.on('disconnected', () => onDeviceDisconnected(device));
@@ -300,6 +420,7 @@ function initDevice(device)
  */
 function deinitDevice(device)
 {
+	// Delete properties we don't want to save.
 	delete device.api;
 	delete device.propNameFromIdx;
 
@@ -319,7 +440,7 @@ async function reconnectDevice(device, retryInterval)
 	{
 		await connectDevice(device).then(
 			() => connected = true,
-			error => logger.info(`Error: ${error.message}. Retrying in ${retryInterval} secs...`)
+			e => logger.info(`Error: ${e.message}. Retrying in ${retryInterval} secs...`)
 		);
 
 		await sleep(retryInterval);
@@ -329,18 +450,19 @@ async function reconnectDevice(device, retryInterval)
 /**
  * Tries to connect to device.
  * @param {Device} device The device to connect.
- * @returns {Promise<void>} A `Promise` that, on error, throws an error with a message to be returned to FHEM TuyaDevice.
+ * @returns {Promise<void>} A `Promise` that, on error, will be rejected
+ * with an `Error` object containing a message to be returned to FHEM TuyaDevice.
  */
 function connectDevice(device)
 {
-	logger.info(`Searching for device '${device.name}'...`);
+	logger.info(`Searching for device ${device.name}...`);
 
 	return device.api.find().then( // Does this harm when reconnecting? => Test it!
 		found =>
 		{
 			assert(found);
 
-			logger.info(`Connecting to device '${device.name}'...`);
+			logger.info(`Connecting to device ${device.name}...`);
 
 			// N.B.: Always return Promises within a Promise chain!
 			// This is obvious in case we need the value returned by the innermost
@@ -386,15 +508,15 @@ function connectDevice(device)
  */
 function disconnectDevice(device)
 {
-	logger.info(`Disconnecting from device '${device.name}'...`);
+	logger.info(`Disconnecting from device ${device.name}...`);
 
 	if (device.api.isConnected())
 	{
 		device.api.disconnect();
 
-		logger.info(`Successfully disconnected from device '${device.name}'.`);
+		logger.info(`Successfully disconnected from device ${device.name}.`);
 	}
-	else logger.info(`Device '${device.name}' already disconnected.`);
+	else logger.info(`Device ${device.name} already disconnected.`);
 }
 
 /**
@@ -410,7 +532,7 @@ function disconnectDevice(device)
  */
 function defineDevice(dev, type, ipOrIdKey, ipOrIdValue, key)
 {
-	logger.info(`Defining device '${dev}' of type '${type}' with ${ipOrIdKey}: '${ipOrIdValue}', key: ${key}'.`);
+	logger.info(`Defining device ${dev} of type ${type} with ${ipOrIdKey}: ${ipOrIdValue}, key: ${key}.`);
 
 	// Check if we have a device with supplied name.
 	// N.B.: Even if we have, it's not in deviceFromName
@@ -420,15 +542,15 @@ function defineDevice(dev, type, ipOrIdKey, ipOrIdValue, key)
 
 	for (device of devices) if (device.name === dev) break;
 
-	if (device && device.type === type && device.tuyapiCtorOpts[ipOrIdKey] === ipOrIdValue && device.tuyapiCtorOpts[key] === key)
+	if (device && device.type === type && device.tuyapiCtorOpts[ipOrIdKey] === ipOrIdValue && device.tuyapiCtorOpts.key === key)
 	{
-		logger.info(`Define device '${dev}': Already defined and up to date.`);
+		logger.info(`Define device ${dev}: Already defined and up to date.`);
 	}
 	else if (device) // Update existing device
 	{
-		if (device.tuyapiCtorOpts[key] !== key) // No idea if device encryption key can change; rather unlikely I think.
+		if (device.tuyapiCtorOpts.key !== key) // No idea if device encryption key can change; rather unlikely I think.
 		{
-			logger.warn(`Define device '${dev}': Updating 'key': '${device.tuyapiCtorOpts.key}' -> '${key}'.`);
+			logger.warn(`Define device ${dev}: Updating key: ${device.tuyapiCtorOpts.key} -> ${key}.`);
 
 			device.tuyapiCtorOpts.key = key;
 		}
@@ -437,20 +559,20 @@ function defineDevice(dev, type, ipOrIdKey, ipOrIdValue, key)
 		{
 			if (device.tuyapiCtorOpts[ipOrIdKey])
 			{
-				logger.info(`Define device '${dev}': Updating '${ipOrIdKey}': '${device.tuyapiCtorOpts[ipOrIdKey]}' -> '${ipOrIdValue}'.`);
+				logger.info(`Define device ${dev}: Updating ${ipOrIdKey}: ${device.tuyapiCtorOpts[ipOrIdKey]} -> ${ipOrIdValue}.`);
 
 				device.tuyapiCtorOpts[ipOrIdKey] = ipOrIdValue;
 			}
 			else if (ipOrIdKey === 'id')
 			{
-				logger.info(`Define device '${dev}': Deleting 'ip': '${device.tuyapiCtorOpts.ip}', setting 'id': '${ipOrIdValue}'.`);
+				logger.info(`Define device ${dev}: Deleting ip: ${device.tuyapiCtorOpts.ip}, setting id: ${ipOrIdValue}.`);
 
 				delete device.tuyapiCtorOpts.ip;
 				device.tuyapiCtorOpts.id = ipOrIdValue;
 			}
 			else
 			{
-				logger.info(`Define device '${dev}': Deleting 'id': '${device.tuyapiCtorOpts.id}', setting 'ip': '${ipOrIdValue}'.`);
+				logger.info(`Define device ${dev}: Deleting id: ${device.tuyapiCtorOpts.id}, setting ip: ${ipOrIdValue}.`);
 
 				delete device.tuyapiCtorOpts.id;
 				device.tuyapiCtorOpts.ip = ipOrIdValue;
@@ -459,7 +581,7 @@ function defineDevice(dev, type, ipOrIdKey, ipOrIdValue, key)
 
 		if (device.type !== type)
 		{
-			logger.warn(`Define device '${dev}': Updating 'type': '${device.type}' -> '${type}'.`);
+			logger.warn(`Define device ${dev}: Updating type: ${device.type} -> ${type}.`);
 
 			device.type = type;
 		}
@@ -472,9 +594,9 @@ function defineDevice(dev, type, ipOrIdKey, ipOrIdValue, key)
 		let found = false;
 
 		for (device of devices)
-			if (device.type === type && device.tuyapiCtorOpts[ipOrIdKey] === ipOrIdValue && device.tuyapiCtorOpts[key] === key)
+			if (device.type === type && device.tuyapiCtorOpts[ipOrIdKey] === ipOrIdValue && device.tuyapiCtorOpts.key === key)
 			{
-				logger.warn(`Define device '${dev}': Updating 'name': '${device.name}' -> '${dev}'. Consider using 'rename' instead of editing fhem.cfg.`);
+				logger.warn(`Define device ${dev}: Updating name: ${device.name} -> ${dev}. Consider using 'rename' instead of editing fhem.cfg.`);
 
 				renameDevice(device, dev);
 
@@ -495,7 +617,7 @@ function defineDevice(dev, type, ipOrIdKey, ipOrIdValue, key)
 					}
 				};
 
-			logger.info(`Define device '${dev}': Created new device of type '${type}' with '${ipOrIdKey}': '${ipOrIdValue}' and 'key': '${key}'.`);
+			logger.info(`Define device ${dev}: Created new device of type ${type} with ${ipOrIdKey}: ${ipOrIdValue} and key: ${key}.`);
 		}
 	}
 
@@ -514,7 +636,7 @@ function defineDevice(dev, type, ipOrIdKey, ipOrIdValue, key)
  */
 function undefDevice(device)
 {
-	logger.info(`Undefining device '${device.name}' of type '${device.type}'.`);
+	logger.info(`Undefining device ${device.name} of type ${device.type}.`);
 
 	disconnectDevice(device);
 	deinitDevice(device);
@@ -532,7 +654,7 @@ function undefDevice(device)
  */
 function deleteDevice(device)
 {
-	logger.info(`Deleting device '${device.name}' of type '${device.type}'.`);
+	logger.info(`Deleting device ${device.name} of type ${device.type}.`);
 
 	assert(!device.api); // ... but you never know ;)
 
@@ -548,7 +670,7 @@ function deleteDevice(device)
  */
 function renameDevice(device, newName)
 {
-	logger.info(`Renaming device '${device.name}' of type '${device.type}' to '${newName}'.`);
+	logger.info(`Renaming device ${device.name} of type ${device.type} to ${newName}.`);
 
 	deviceFromName.delete(device.name);
 	deviceFromName.set(newName, device);
@@ -563,7 +685,7 @@ function renameDevice(device, newName)
  */
 function onDeviceError(device, error)
 {
-	logger.error(`Event from device: '${device.name}': Error:`, error.message);
+	logger.error(`Event from device ${device.name}: Error:`, error.message);
 
 	fhemClient.callFn(device.name, 'OnError', true);
 
@@ -576,7 +698,7 @@ function onDeviceError(device, error)
 
 	if (!device.api.isConnected())
 	{
-		logger.error(`Could not connect to device '${device.name}', retrying...`);
+		logger.error(`Could not connect to device ${device.name}, retrying...`);
 
 		reconnectDevice(device, 10);
 	}
@@ -588,7 +710,7 @@ function onDeviceError(device, error)
  */
 function onDeviceConnected(device)
 {
-	logger.info(`Event from device '${device.name}': Connected.`);
+	logger.info(`Event from device ${device.name}: Connected.`);
 
 	fhemClient.callFn(device.name, 'OnConnected', true);
 }
@@ -601,7 +723,7 @@ function onDeviceDisconnected(device)
 {
 	if (device.api) // Ignore if device has been undefined
 	{
-		logger.warn(`Event from device '${device.name}': Disconnected, trying to reconnect...`);
+		logger.warn(`Event from device ${device.name}: Disconnected, trying to reconnect...`);
 
 		fhemClient.callFn(device.name, 'OnDisconnected', true);
 
@@ -612,21 +734,22 @@ function onDeviceDisconnected(device)
 /**
  * Initiates calibration procedure for a blind device.
  * @param {Device} device
- * @returns {Promise<void>} A Promise that, on error, throws an error with a message to be returned to FHEM TuyaDevice.
+ * @returns {Promise<void>} A `Promise` that, on error, will be rejected
+ * with an `Error` object containing a message to be returned to FHEM TuyaDevice.
  */
 function beginBlindCalibration(device)
 {
 	blindBeingCalibrated = device;
 	blindCalibrationPhase = 0;
 
-	logger.info(`Blind calibration: Opening '${device.name}' completely...`);
+	logger.info(`Blind calibration: Opening ${device.name} completely...`);
 
 	return setDevProp(device, 1, 'open').catch(
-		error =>
+		e =>
 		{
 			blindCalibrationPhase = blindBeingCalibrated = undefined;
 
-			const message = `Blind calibration: Could not open '${device.name}', calibration aborted. Reason: ${error.message}`;
+			const message = `Blind calibration: Could not open ${device.name}, calibration aborted. Reason: ${e.message}`;
 
 			logger.error(message);
 
@@ -665,9 +788,9 @@ function blindCalibrationProgress(device, currValue, currTime)
 			{
 				blindCalibrationPhase = blindBeingCalibrated = undefined;
 
-				logger.error(message = `Blind calibration: You did not open '${device.name}', calibration aborted.`);
+				logger.error(message = `Blind calibration: You did not open ${device.name}, calibration aborted.`);
 			}
-			else logger.info(message = `Blind calibration: '${device.name}' is opening...`);
+			else logger.info(message = `Blind calibration: ${device.name} is opening...`);
 
 			break;
 		case 1:  // Blind is fully open: Starting point for measuring fullCloseTime.
@@ -676,9 +799,9 @@ function blindCalibrationProgress(device, currValue, currTime)
 			{
 				blindCalibrationPhase = blindBeingCalibrated = undefined;
 
-				logger.error(message = `Blind calibration: '${device.name}' not stopped, calibration aborted.`);
+				logger.error(message = `Blind calibration: ${device.name} not stopped, calibration aborted.`);
 			}
-			else logger.info(message = `Blind calibration: Now close '${device.name}' and stop immediately when it is completely closed.`);
+			else logger.info(message = `Blind calibration: Now close ${device.name} and stop immediately when it is completely closed.`);
 
 			break;
 		case 2:  // Blind is closing...
@@ -686,9 +809,9 @@ function blindCalibrationProgress(device, currValue, currTime)
 			{
 				blindCalibrationPhase = blindBeingCalibrated = undefined;
 
-				logger.error(message = `Blind calibration: You did not close '${device.name}', calibration aborted.`);
+				logger.error(message = `Blind calibration: You did not close ${device.name}, calibration aborted.`);
 			}
-			else logger.info(message = `Blind calibration: '${device.name}' is closing...`);
+			else logger.info(message = `Blind calibration: ${device.name} is closing...`);
 
 			break;
 		case 3:  // Blind is fully closed: Calculate fullCloseTime; starting point for measuring fullOpenTime.
@@ -697,13 +820,13 @@ function blindCalibrationProgress(device, currValue, currTime)
 			{
 				blindCalibrationPhase = blindBeingCalibrated = undefined;
 
-				logger.error(message = `Blind calibration: '${device.name}' not stopped, calibration aborted.`);
+				logger.error(message = `Blind calibration: ${device.name} not stopped, calibration aborted.`);
 			}
 			else
 			{
 				newFullCloseTime = currTime - device.defaultPropLastChgTime;
 
-				logger.info(message = `Blind calibration: Now open '${device.name}' and stop immediately when it is completely open.`);
+				logger.info(message = `Blind calibration: Now open ${device.name} and stop immediately when it is completely open.`);
 			}
 
 			break;
@@ -712,9 +835,9 @@ function blindCalibrationProgress(device, currValue, currTime)
 			{
 				blindCalibrationPhase = blindBeingCalibrated = undefined;
 
-				logger.error(message = `Blind calibration: You did not open '${device.name}', calibration aborted.`);
+				logger.error(message = `Blind calibration: You did not open ${device.name}, calibration aborted.`);
 			}
-			else logger.info(message = `Blind calibration: '${device.name}' is opening...`);
+			else logger.info(message = `Blind calibration: ${device.name} is opening...`);
 
 			break;
 		case 5:  // Blind is fully open: Calculate fullOpenTime.
@@ -723,7 +846,7 @@ function blindCalibrationProgress(device, currValue, currTime)
 			{
 				blindCalibrationPhase = blindBeingCalibrated = undefined;
 
-				logger.error(message = `Blind calibration: '${device.name}' not stopped, calibration aborted.`);
+				logger.error(message = `Blind calibration: ${device.name} not stopped, calibration aborted.`);
 			}
 			else
 			{
@@ -733,7 +856,7 @@ function blindCalibrationProgress(device, currValue, currTime)
 				if (device.fullCloseTime !== undefined && device.fullOpenTime !== undefined) // Let user choose to accept or discard new calibration
 				{
 					// @ts-ignore
-					logger.info(message = `Blind calibration: '${device.name}': fullCloseTime: New: ${newFullCloseTime} s, current: ${device.fullCloseTime} s; ` +
+					logger.info(message = `Blind calibration: ${device.name}: fullCloseTime: New: ${newFullCloseTime} s, current: ${device.fullCloseTime} s; ` +
 						// @ts-ignore
 						`fullOpenTime: New: ${newFullOpenTime} s, current: ${device.fullOpenTime} s.\n` +
 						'Press "Open" to apply the new calibration. To keep the current calibration, press "Close".');
@@ -749,7 +872,7 @@ function blindCalibrationProgress(device, currValue, currTime)
 					device.percentage = 0;                // Initialise percentage; 0% means fully open.
 
 					// @ts-ignore
-					logger.info(message = `Blind calibration: '${device.name}': fullCloseTime: ${device.fullCloseTime} s, fullOpenTime: ${device.fullOpenTime} s.\n` +
+					logger.info(message = `Blind calibration: ${device.name}: fullCloseTime: ${device.fullCloseTime} s, fullOpenTime: ${device.fullOpenTime} s.\n` +
 						'Calibration finished successfully.');
 				}
 			}
@@ -764,11 +887,11 @@ function blindCalibrationProgress(device, currValue, currTime)
 				device.fullOpenTime = newFullOpenTime;
 				device.percentage = 0;                // Initialise percentage; 0% means fully open.
 
-				logger.info(message = `Blind calibration: '${device.name}': New calibration applied. Calibration finished successfully.`);
+				logger.info(message = `Blind calibration: ${device.name}: New calibration applied. Calibration finished successfully.`);
 			}
 			else // Discard
 			{
-				logger.info(message = `Blind calibration: '${device.name}': New calibration discarded. Calibration has not been changed.`);
+				logger.info(message = `Blind calibration: ${device.name}: New calibration discarded. Calibration has not been changed.`);
 			}
 	}
 
@@ -798,7 +921,7 @@ function updateBlindPercentage(device, currTime)
 	else if (device.percentage > 100) device.percentage = 100;
 
 	// @ts-ignore
-	logger.info(`Blind '${device.name}' is at ${Number.parseInt(device.percentage)} %.`);
+	logger.info(`Blind ${device.name} is at ${Number.parseInt(device.percentage)} %.`);
 
 	// Notify corresponding FHEM TuyaDevice of changed server-supplied device property.
 	// @ts-ignore
@@ -814,12 +937,12 @@ function setBlindPercentage(device, percentage)
 {
 	if (!device.percentage)
 	{
-		logger.error(`Device '${device.name}' is not calibrated, please calibrate first.`);
+		logger.error(`Blind ${device.name} is not calibrated, please calibrate first.`);
 
 		return Promise.reject();
 	}
 
-	logger.error(`Setting blind '${device.name}' to ${percentage} %...`);
+	logger.error(`Setting blind ${device.name} to ${percentage} %...`);
 
 	const deltaPerc = percentage - device.percentage;
 	const value = deltaPerc > 0 ? 'close' : 'open';
@@ -827,9 +950,9 @@ function setBlindPercentage(device, percentage)
 	const fullTime = value === 'close' ? device.fullCloseTime : -device.fullOpenTime;
 	const deltaT = deltaPerc * fullTime / 100;
 
-	function handleError(error)
+	function handleError(e)
 	{
-		const message = `Failed to set percentage for blind '${device}': ${error.message}`;
+		const message = `Failed to set percentage for blind ${device}: ${e.message}`;
 
 		logger.error(message);
 
@@ -840,7 +963,7 @@ function setBlindPercentage(device, percentage)
 		() => sleep(deltaT).then(
 			() => setDevProp(device, 1, 'stop').then(
 				// @ts-ignore
-				() => logger.info(`Successfully set percentage for blind '${device}'. Actual value: ${Number.parseInt(device.percentage)} %`),
+				() => logger.info(`Successfully set percentage for blind ${device}. Actual value: ${Number.parseInt(device.percentage)} %`),
 				stopErr => handleError(stopErr)
 			)
 		),
@@ -855,7 +978,7 @@ function setBlindPercentage(device, percentage)
  */
 function onDeviceData(device, data)
 {
-	logger.debug(`Event from device '${device.name}': Data:`, data);
+	logger.debug(`Event from device ${device.name}: Data:`, data);
 
 	let dpsAsArray = Object.entries(data.dps);
 
@@ -870,7 +993,7 @@ function onDeviceData(device, data)
 	const changedPropNameAndValue = [device.propNameFromIdx.get(Number(dpsAsArray[0][0])), dpsAsArray[0][1]];
 
 	if (!blindBeingCalibrated) // Suppress this when calibrating a blind since calibration prints its own messages.
-		logger.debug(`Device '${device.name}': Property '${changedPropNameAndValue[0]}' has changed its value to '${changedPropNameAndValue[1]}'`);
+		logger.debug(`Device ${device.name}: Property ${changedPropNameAndValue[0]} has changed its value to ${changedPropNameAndValue[1]}`);
 
 	// Notify corresponding FHEM TuyaDevice of changed native device property.
 	fhemClient.callFn(device.name, 'OnPropChanged', true, false, ...changedPropNameAndValue);
@@ -888,7 +1011,7 @@ function onDeviceData(device, data)
 			{
 				const message = blindCalibrationProgress(device, currValue, currTime);
 
-				// Forward state message FHEM TuyaDevice.
+				// Forward state message to FHEM TuyaDevice.
 				fhemClient.callFn(device.name, 'OnMessage', true, false, message);
 			}
 
@@ -910,10 +1033,24 @@ function onDeviceData(device, data)
 	}
 }
 
-function startup()
+async function startup()
 {
 	processCmdLineArgs();
+
+	log4js.configure(loggerConfig);
+	logger = log4js.getLogger('tuyadevctlsrv_fhem');
+
+	logger.debug(`Command line: ${process.argv.join(' ')}, PID: ${process.pid}`);
+
+	logger.debug(`Using logger config:\n ${JSON.stringify(loggerConfig, null, 4)}`);
+
 	readConfig();
+
+	fhemClient = new FhemClient({ ...config.current.fhem, getOptions: { timeout: 5000 } }, log4js.getLogger('fhem_client'));
+
+	// I like the promise chaining pattern, but using 'await' here looks much cleaner
+	// than putting the following statements that need tuyaMasterName in '.then(tuyaMasterName => { ... });'.
+	tuyaMasterName = await fhemClient.execPerlCode('$modules{TuyaMaster}{defptr}{NAME}');
 
 	const serverConfig = config.current.server;
 
@@ -923,55 +1060,134 @@ function startup()
 		e =>
 		{
 			// @ts-ignore
-			if (e.code === 'EADDRINUSE') logger.error(`Address '${serverConfig.host}:${serverConfig.port}' already in use.`);
-			else logger.error('Server error:', e.message);
+			if (e.code === 'EADDRINUSE')
+			{
+				logger.fatal(e.message = `Cannot start HTTP server: Address ${serverConfig.host}:${serverConfig.port} already in use.`);
+			}
+			else
+			{
+
+				// @ts-ignore
+				logger.error(e.message = `HTTP server error: Code: ${e.code}, message: ${e.message}`);
+			}
+
+			throw e;
 		}
 	);
 
-	logger.info(`Starting server to listen on ${serverConfig.host}:${serverConfig.port} for HTTP requests...`);
+	logger.info(`Starting HTTP server to listen on ${serverConfig.host}:${serverConfig.port} for HTTP requests...`);
 
-	server.listen(serverConfig, () => logger.info('Successfully started server:', server.address()));
-
-	process.once('SIGINT',
-		code =>
+	server.listen(serverConfig,
+		() =>
 		{
-			logger.info('SIGINT received.');
-			shutdown();
+			logger.info('Successfully started HTTP server:', server.address());
+
+			// @ts-ignore
+			fhemClient.callFn(tuyaMasterName, 'OnServerRunning', true, false, process.pid);
 		}
 	);
 
-	process.once('SIGTERM',
-		code =>
+	function handleSignal(signal)
+	{
+		logger.info(`${signal} received.`);
+
+		if (signal.match(/^(?:SIGINT|SIGTERM)$/))
 		{
-			logger.info('SIGTERM received.');
-			shutdown();
+			shutdown(signal); // FHEM TuyaMaster "kills" us via SIGTERM or SIGINT.
 		}
-	);
+	}
+
+	process.on('SIGINT', handleSignal);
+	process.on('SIGTERM', handleSignal);
 }
 
 /**
- * @param {http.ServerResponse} [res]
+ * Shutdown the application, notifying FHEM TuyaMaster.
+ * @param {string} origin 'SIGTERM' or 'SIGINT' in case of regular shutdown
+ * by FHEM TuyaMaster, where SIGTERM indicates we are supposed to callFn OnServerExit
+ * if possible, wile SIGINT indicates we shall write to exitInfoFilePath. One of
+ * 'uncaughtException' or 'unhandledRejection' in case of error.
+ * @param {string} [code] Error code in case of error, if supplied.
+ * @param {string} [message] Error message in case of error.
  */
-function shutdown(res)
+function shutdown(origin, code, message)
 {
-	logger.info('Shutting down server...');
-
-	// When FHEM is shut down, each 'TuyaDevice' instance disconnects its device,
-	// but just to be sure...
-	for (let device of devices) if (res && device.api.isConnected())
+	// @ts-ignore
+	if (shutdown.called)
 	{
-		logger.warn(`Device ${device.name} is still connected, this should not happen!`);
-
-		disconnectDevice(device);
+		switch (origin)
+		{
+			case 'SIGINT':
+			case 'SIGTERM':
+				logger.warn('Already shutting down...'); // Should not happen.
+				return;
+			default: // Called by error handler after first call, so error must have occurred here. Return to avoid endless recursion.
+				logger.error('Another error occurred during shutdown.');
+				return;
+		}
 	}
 
-	writeConfig();
+	// @ts-ignore
+	shutdown.called = true;
 
-	server.close(() => logger.info('Server has been shut down.'));
+	if (process.exitCode === undefined) process.exitCode = 0;
 
-	log4js.shutdown();
+	logger.info('Shutting down...');
 
-	if (res) respondSuccess(res);
+	if (devices) for (const device of devices) if (device.api)
+	{
+		if (device.api.isConnected()) disconnectDevice(device);
+
+		deinitDevice(device);
+	}
+
+	if (config.current) writeToFile(configFilePath, config.current, 'config data');
+
+	function lastStep(origin, code, message)
+	{
+		// Notify FHEM TuyaMaster of immiment exit.
+
+		if (origin !== 'SIGINT' && fhemClient && tuyaMasterName && !code.match(/EFHEMCL_(?:RES|ABRT|TIMEDOUT|CONNREFUSED|NETUNREACH|CONNRESET|REQ|AUTH|WEBN|NOTOKEN)/))
+		{
+			fhemClient.callFn(tuyaMasterName, 'OnServerExit', true, false, process.exitCode, origin, code, message);
+		}
+		else
+		{
+			writeToFile(exitInfoFilePath, `${process.exitCode}\n${origin}\n${code}\n${message}`, 'exit info');
+		}
+
+		logger.info(`Exiting with code ${process.exitCode}.`);
+
+		// @ts-ignore
+		if (logger !== fhemLogLogger)
+		{
+			log4js.shutdown(e => { if (e) fhemLogLogger.error(e); });
+
+			// @ts-ignore
+			logger = fhemLogLogger;
+		}
+	}
+
+	if (server && server.listening)
+	{
+		logger.debug('Closing HTTP server...');
+
+		server.close(
+			e =>
+			{
+				if (e)
+				{
+					// @ts-ignore
+					logger.error(`Error closing HTTP server: Code: ${e.code}, message: ${e.message}`);
+				}
+
+				logger.debug('HTTP server has been closed.');
+
+				lastStep(origin, code, message);
+			}
+		);
+	}
+	else lastStep(origin, code, message);
 }
 
 /**
@@ -980,6 +1196,30 @@ function shutdown(res)
  */
 async function processHttpRequest(req, res)
 {
+	/**
+	 * Responds with string 'succ'.
+	 * @param {http.ServerResponse} res
+	 */
+	function respondSuccess(res)
+	{
+		res.end('succ');
+	}
+
+	/**
+	 * Waits for `promise` to be resolved or rejected and responds
+	 * with string from `promise` if present, else with 'succ' on success
+	 * or with error message from `promise` on error.
+	 * @param {http.ServerResponse} res
+	 * @param {Promise<string | void>} promise
+	 */
+	function responseFromPromise(res, promise)
+	{
+		promise.then(
+			result => result !== undefined ? res.end(result) : respondSuccess(res),
+			e => res.end(e.message)
+		);
+	}
+
 	res.writeHead(200, { 'Content-Type': 'text/plain' });
 
 	// Legacy API of URL module
@@ -994,7 +1234,9 @@ async function processHttpRequest(req, res)
 
 	// WHATWG API
 
-	const params = (new URL(req.url)).searchParams;
+	// req.url is the part after the hostname. The URL ctor needs a full URL,
+	// but the hostname is completely irrelevant since we are only interested in searchParams.
+	const params = new URL('http://foo.bar' + req.url).searchParams;
 
 	logger.debug('Parameters from URL:', params);
 
@@ -1008,13 +1250,15 @@ async function processHttpRequest(req, res)
 	/**
 	 * Without `dev`: server command.
 	 *
-	 * With `dev`: 'connect', 'undef', 'delete', server-provided device command.
+	 * With `dev`: 'connect'(\*), 'undef'(\*), 'delete'(\*), server-provided device command(\*\*).
 	 *
-	 * With `dev` and `arg`: 'define', 'rename'.
+	 * With `dev` and `arg`: 'define', 'rename'(\*).
 	 *
-	 * With `dev` and `prop`: 'get'.
+	 * With `dev` and `prop`: 'get'(\*\*).
 	 *
-	 * With `dev`, `prop` and `arg`: 'set'.
+	 * With `dev`, `prop` and `arg`: 'set'(\*\*).
+	 *
+	 * (\*) Device must be defined and initialised, (\*\*) Device must be connected.
 	 */
 	const cmd = params.get('cmd');
 
@@ -1039,13 +1283,12 @@ async function processHttpRequest(req, res)
 	}
 
 	if (!dev) switch (cmd) // Server command
-		{
-			case 'getState': res.end('running'); return;
-			case 'shutdown': shutdown(res); return;
-			default:
-				invalidRequest(res, `Unknown server command: '${cmd}'`);
-				return;
-		}
+	{
+		case 'test':	 res.end('succ'); return;
+		default:
+			invalidRequest(res, `Unknown server command: ${cmd}`);
+			return;
+	}
 
 	const device = deviceFromName.get(dev);
 
@@ -1057,7 +1300,7 @@ async function processHttpRequest(req, res)
 			{
 				if (!arg)
 				{
-					invalidRequest(res, `[cmd: '${cmd}', dev: '${dev}']: 'arg' not specified.`);
+					invalidRequest(res, `[cmd: ${cmd}, dev: ${dev}]: 'arg' not specified.`);
 					return;
 				}
 
@@ -1065,31 +1308,31 @@ async function processHttpRequest(req, res)
 
 				if (args.length < 4 || args.length % 2 !== 0 || !args[1].match(/^(?:ip|id)$/))
 				{
-					invalidRequest(res, `[cmd: '${cmd}', dev: '${dev}', arg: '${arg}']: 'arg' is malformed.`);
+					invalidRequest(res, `[cmd: ${cmd}, dev: ${dev}, arg: ${arg}]: 'arg' is malformed.`);
 					return;
 				}
 
 				if (device)
 				{
-					invalidRequest(res, `[cmd: '${cmd}', dev: '${dev}', arg: '${arg}']: Device already defined.`);
+					invalidRequest(res, `[cmd: ${cmd}, dev: ${dev}, arg: ${arg}]: Device already defined.`);
 					return;
 				}
 
-				const type = args[0];
-				const ipOrIdKey = args[1]; // 'ip' or 'id'
+				const type        = args[0];
+				const ipOrIdKey   = args[1]; // 'ip' or 'id'
 				const ipOrIdValue = args[2];
-				const key = args[3];
+				const key         = args[3];
 
 				const propNameFromIdx = new Map();
 
 				for (let i = 4; i < args.length; i += 2)
 				{
-					const propIdx = Number(args[i]);
+					const propIdx  = Number(args[i]);
 					const propName = args[i + 1];
 
 					if (isNaN(propIdx))
 					{
-						invalidRequest(res, `[cmd: '${cmd}', dev: '${dev}', arg: '${arg}']: '${propIdx}' is not a valid index for property '${propName}'.`);
+						invalidRequest(res, `[cmd: ${cmd}, dev: ${dev}, arg: ${arg}]: '${propIdx}' is not a valid index for property ${propName}.`);
 						return;
 					}
 
@@ -1105,7 +1348,7 @@ async function processHttpRequest(req, res)
 
 	if (!device)
 	{
-		invalidRequest(res, `[cmd: '${cmd}']: Unknown device '${dev}'.`);
+		invalidRequest(res, `[cmd: ${cmd}]: Unknown device '${dev}'.`);
 		return;
 	}
 
@@ -1119,7 +1362,7 @@ async function processHttpRequest(req, res)
 		case 'rename': // Issued from within a FHEM TuyaDevice's RenameFn.
 			if (!arg)
 			{
-				invalidRequest(res, `[cmd: '${cmd}', dev: '${dev}']: 'arg' not specified.`);
+				invalidRequest(res, `[cmd: ${cmd}, dev: ${dev}]: 'arg' not specified.`);
 			}
 			else
 			{
@@ -1135,7 +1378,7 @@ async function processHttpRequest(req, res)
 			respondSuccess(res);
 			return;
 		case 'delete':  // Issued from within a FHEM TuyaDevice's DeleteFn.
-			deleteDevice(device);
+			// deleteDevice(device);
 
 			respondSuccess(res);
 			return;
@@ -1143,7 +1386,7 @@ async function processHttpRequest(req, res)
 
 	if (!device.api.isConnected())
 	{
-		invalidRequest(res, `[cmd: '${cmd}']: Device '${dev}' is currently not connected.`);
+		invalidRequest(res, `[cmd: ${cmd}]: Device ${dev} is currently not connected.`);
 		return;
 	}
 
@@ -1155,11 +1398,11 @@ async function processHttpRequest(req, res)
 		case 'set':
 			if (!prop)
 			{
-				invalidRequest(res, `[cmd: '${cmd}', dev: '${dev}']: 'prop' not specified.`);
+				invalidRequest(res, `[cmd: ${cmd}, dev: ${dev}]: 'prop' not specified.`);
 			}
 			else if (cmd === 'set' && !arg)
 			{
-				invalidRequest(res, `[cmd: '${cmd}', dev: '${dev}', prop: '${prop}']: 'arg' not specified.`);
+				invalidRequest(res, `[cmd: ${cmd}, dev: ${dev}, prop: ${prop}]: 'arg' not specified.`);
 			}
 			else if (!isNaN(Number(prop))) // Native device property
 			{
@@ -1169,7 +1412,7 @@ async function processHttpRequest(req, res)
 				// @ts-ignore
 				if (!device.propNameFromIdx.has(prop))
 				{
-					invalidRequest(res, `[cmd: '${cmd}', dev: '${dev}']: '${prop}' is not a valid property index.`);
+					invalidRequest(res, `[cmd: ${cmd}, dev: ${dev}]: '${prop}' is not a valid property index.`);
 				}
 				else
 				{
@@ -1186,7 +1429,6 @@ async function processHttpRequest(req, res)
 								}
 							)
 						);
-
 					}
 					else // set
 					{
@@ -1215,12 +1457,12 @@ async function processHttpRequest(req, res)
 					case 'percentage':
 						if (device.type !== 'blind')
 						{
-							invalidRequest(res, `[cmd: '${cmd}', dev: '${dev}', prop: '${prop}']: Property is valid for blind device only.`);
+							invalidRequest(res, `[cmd: ${cmd}, dev: ${dev}, prop: ${prop}]: Property is valid for blind device only.`);
 						}
 						// @ts-ignore
 						else if (cmd === 'set' && isNaN(arg = Number(arg)) || arg < 0 || arg > 100)
 						{
-							invalidRequest(res, `[cmd: '${cmd}', dev: '${dev}', prop: '${prop}']: '${arg}' is not a valid percentage.`);
+							invalidRequest(res, `[cmd: ${cmd}, dev: ${dev}, prop: ${prop}]: '${arg}' is not a valid percentage.`);
 						}
 						else
 						{
@@ -1240,11 +1482,11 @@ async function processHttpRequest(req, res)
 		case 'calibrate':
 			if (device.type !== 'blind')
 			{
-				invalidRequest(res, `[cmd: '${cmd}', dev: '${dev}']: Command is valid for blind device only.`);
+				invalidRequest(res, `[cmd: ${cmd}, dev: ${dev}]: Command is valid for blind device only.`);
 			}
 			else if (blindBeingCalibrated)
 			{
-				invalidRequest(res, `[cmd: '${cmd}', dev: '${dev}']: Already calibrating device '${blindBeingCalibrated.name}'.`);
+				invalidRequest(res, `[cmd: ${cmd}, dev: ${dev}]: Already calibrating device ${blindBeingCalibrated.name}.`);
 			}
 			else
 			{
@@ -1254,7 +1496,38 @@ async function processHttpRequest(req, res)
 			return;
 	}
 
-	invalidRequest(res, `'${cmd}' is not a valid command for device '${dev}'.`);
+	invalidRequest(res, `'${cmd}' is not a valid command for device ${dev}.`);
+}
+
+/**
+ * Gets value of property with index `propIdx` of `device`.
+ * @param {Device} device
+ * @param {number} propIdx
+ * @returns {Promise<string | boolean>} A `Promise` that will be resolved
+ * with the value on success or rejected with an `Error` object containing
+ * a message to be returned to FHEM TuyaDevice.
+ */
+function getDevProp(device, propIdx)
+{
+	const propName = device.propNameFromIdx.get(propIdx);
+
+	logger.info(`Querying value of property ${propName} of device ${device.name}...`);
+
+	return device.api.get({ dps: propIdx }).then(
+		value =>
+		{
+			logger.info(`Successfully queried value of ${propName}: ${value}.`);
+
+			return value;
+		},
+		e =>
+		{
+			const message = `Failed to get value of ${propName}: ${e.message}`;
+
+			logger.error(message);
+			throw new Error(message);
+		}
+	);
 }
 
 /**
@@ -1262,18 +1535,19 @@ async function processHttpRequest(req, res)
  * @param {Device} device
  * @param {number} propIdx
  * @param {string | boolean} value
- * @returns {Promise<void>} A `Promise` that, on error, throws an error with a message to be returned to FHEM TuyaDevice.
+ * @returns {Promise<void>} A `Promise` that, on error, will be rejected
+ * with an `Error` object containing a message to be returned to FHEM TuyaDevice.
  */
 function setDevProp(device, propIdx, value)
 {
 	const propName = device.propNameFromIdx.get(propIdx);
 
-	logger.info(`Setting property '${propName}' of device '${device.name}' to '${value}'...`);
+	logger.info(`Setting property ${propName} of device ${device.name} to ${value}...`);
 
 	return device.api.set({ dps: propIdx, set: value }).then(
 		response =>
 		{
-			logger.debug(`Response from device '${device.name}':`, response);
+			logger.debug(`Response from device ${device.name}:`, response);
 
 			const currValue = response.dps[propIdx];
 
@@ -1286,55 +1560,22 @@ function setDevProp(device, propIdx, value)
 
 			if (success)
 			{
-				logger.info(`Successfully set '${propName}'.`);
+				logger.debug(`Successfully set ${propName}.`);
 			}
 			else
 			{
-				const message = `Failed to set '${propName}': Value '${value}' rejected. Current value: '${currValue}'`;
+				const message = `Failed to set ${propName}: Value ${value} rejected. Current value: ${currValue}.`;
 
 				logger.error(message);
-
 				throw new Error(message);
 			}
 		},
-		error =>
+		e =>
 		{
-			const message = `Failed to set '${propName}' to '${value}'`;
+			const message = `Failed to set ${propName} to ${value}: ${e.message}`;
 
-			logger.error(message + ':', error.message);
-
-			throw new Error(message + '.');
-		}
-	);
-}
-
-/**
- * Gets value of property with index `propIdx` of `device`.
- * @param {Device} device
- * @param {number} propIdx
- * @returns {Promise<string | boolean>} A `Promise` that contains the value on success
- * or throws an error with a message to be returned to FHEM TuyaDevice.
- */
-function getDevProp(device, propIdx)
-{
-	const propName = device.propNameFromIdx.get(propIdx);
-
-	logger.info(`Getting value of property '${propName}' of device '${device.name}'...`);
-
-	return device.api.get({ dps: propIdx }).then(
-		value =>
-		{
-			logger.info(`Successfully got value of '${propName}': '${value}'.`);
-
-			return value;
-		},
-		error =>
-		{
-			const message = `Failed to get value of '${propName}'`;
-
-			logger.error(message + ':', error.message);
-
-			throw new Error(message + '.');
+			logger.error(message);
+			throw new Error(message);
 		}
 	);
 }
@@ -1343,26 +1584,26 @@ function getDevProp(device, propIdx)
  * Toggles boolean property with index `propIdx` of `device`.
  * @param {Device} device
  * @param {number} propIdx
- * @returns {Promise<void>} A `Promise` that, on error, throws an error with a message to be returned to FHEM TuyaDevice.
+ * @returns {Promise<void>} A `Promise` that, on error, will be rejected with an `Error` object
+ * containing a message to be returned to FHEM TuyaDevice.
  */
 function toggleDevProp(device, propIdx)
 {
-	function handleError(error)
+	const propName = device.propNameFromIdx.get(propIdx);
+
+	function handleError(e)
 	{
-		const message = `Failed to toggle value of '${propName}': ${error.message}`;
+		const message = `Failed to toggle value of ${propName}: ${e.message}`;
 
 		logger.error(message);
-
 		throw new Error(message);
 	}
 
-	const propName = device.propNameFromIdx.get(propIdx);
-
-	logger.info(`Toggling property '${propName}' of device '${device.name}'...`);
+	logger.info(`Toggling property ${propName} of device ${device.name}...`);
 
 	return getDevProp(device, propIdx).then(
-		value => setDevProp(device, propIdx, value).then(
-			() => logger.info(`Successfully toggled value of '${propName}'`),
+		value => setDevProp(device, propIdx, !value).then(
+			() => logger.info(`Successfully toggled value of ${propName}.`),
 			setErr => handleError(setErr)
 		),
 		getErr => handleError(getErr)
@@ -1382,30 +1623,6 @@ function invalidRequest(res, message)
 }
 
 /**
- * Responds with string 'succ'.
- * @param {http.ServerResponse} res
- */
-function respondSuccess(res)
-{
-	res.end('succ');
-}
-
-/**
- * Waits for `promise` to be resolved or rejected and responds
- * with string from `promise` if present, else with 'succ' on success
- * or with error message from `promise` on error.
- * @param {http.ServerResponse} res
- * @param {Promise<string | void>} promise
- */
-function responseFromPromise(res, promise)
-{
-	promise.then(
-		result => result !== undefined ? res.end(result) : respondSuccess(res),
-		error => res.end(error.message)
-	);
-}
-
-/**
  * Returns a `promise` that will be resolved after `secs` seconds.
  * @param {number} secs
  * @returns {Promise<void>}
@@ -1413,6 +1630,52 @@ function responseFromPromise(res, promise)
 function sleep(secs)
 {
 	return new Promise(resolve => setTimeout(resolve, secs * 1000));
+}
+
+/**
+ * Creates the parent directory of `filePath` if it doesn't already exist
+ * and writes `data` to `filePath`. If an error occurs, an error message
+ * including `dataDescription` is logged.
+ * @param {String} filePath
+ * @param {any} data If an object is supplied here, it will be stringified.
+ * @param {String} dataDescription
+ */
+function writeToFile(filePath, data, dataDescription)
+{
+	const dir = path.dirname(filePath);
+
+	logger.info(`Writing ${dataDescription} to ${filePath}...`);
+
+	if (!fs.existsSync(dir))
+	{
+		logger.info(`Creating dir ${dir}...`);
+
+		try
+		{
+			fs.mkdirSync(dir, { recursive: true }); // recursive doesn't harm if merely one parent dir has to be created.
+		}
+		catch (e)
+		{
+			logger.error(`Cannot write ${dataDescription} to ${filePath}: Error creating dir ${dir}: ${e.message}.`);
+
+			return false;
+		}
+	}
+
+	if (data instanceof Object) data = JSON.stringify(data, null, 4);
+
+	try
+	{
+		fs.writeFileSync(filePath, data, 'utf8');
+	}
+	catch (e)
+	{
+		logger.error(`Cannot write ${dataDescription} to ${filePath}: ${e.message}.`);
+
+		return false;
+	}
+
+	return true;
 }
 
 // Main program

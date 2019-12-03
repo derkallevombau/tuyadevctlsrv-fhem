@@ -1,6 +1,6 @@
-log
 node_modules
 .vstags
-config.json
+.vscode
 jsconfig.json
 tsconfig.json
+package-lock.json

@@ -1,0 +1,28 @@
+{
+	"include": ["src/**/*"],
+    "compilerOptions": {
+        "module": "CommonJS",
+        "target": "ES2020",
+		"lib": ["ES2020"],
+		// Enables the generation of sourcemap files (.js.map) for .js output files. These files allow debuggers
+		// and other tools to display the original TypeScript source code when actually working with the emitted
+		// JavaScript files.
+        "sourceMap": true,
+		"declaration": true,
+		// Generates a source map (.d.ts.map) for .d.ts files which map back to the original .ts source file.
+		// This will allow editors such as VS Code to go to the original .ts file when using features
+		// like Go to Definition.
+		"declarationMap": true,
+		"baseUrl": "./",
+		"pretty": true,
+		"noEmitOnError": true,
+		"listEmittedFiles": true,
+		"stripInternal": true,
+		// Very useful in conjunction with new rule '@typescript-eslint/no-unsafe-assignment':
+		// bind, call and apply get type params, so instead of e. g.
+		// 'apply(this: Function, thisArg: any, argArray?: any): any;', we have
+		// 'apply<T, A extends any[], R>(this: (this: T, ...args: A) => R, thisArg: T, args: A): R;'.
+		// Type params are always a good thing, and we have no 'any' anymore that ESLint complains about.
+		"strictBindCallApply": true
+    }
+}

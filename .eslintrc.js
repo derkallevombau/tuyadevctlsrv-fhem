@@ -1,0 +1,1 @@
+lintcfg-ts/.eslintrc.js

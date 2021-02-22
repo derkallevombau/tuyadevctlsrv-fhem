@@ -2,9 +2,9 @@
 	"name": "tuyadevctlsrv-fhem",
 	"version": "0.1.0",
 	"description": "A HTTP server to control Tuya devices using tuyAPI. Backend for TuyaMaster and TuyaDevice FHEM modules.",
-	"main": "bin/tuyadevctlsrv-fhem.js",
+	"main": "dist/bin/tuyadevctlsrv-fhem.js",
 	"files": [
-		"bin",
+		"dist",
 		"src"
 	],
 	"author": "derkallevombau",
@@ -24,12 +24,12 @@
 	],
 	"config": {
 		"rootDir": "src",
-		"outDir": "bin",
+		"outDir": "dist",
 		"lintCfgSubtreeRepoBasePath": "~/VS-Code-Projects/linter-configs/"
 	},
 	"scripts": {
 		"compile": "tsc -p ./ --rootDir \"$npm_package_config_rootDir\" --outDir \"$npm_package_config_outDir\" --removeComments true",
-		"start": "npm run compile && node bin/fhem-client-test.js",
+		"start": "npm run compile && node dist/bin/tuyadevctlsrv.js",
 		"watch": "tsc --watch -p ./ --noEmitOnError false",
 		"lint": "eslint --ext .ts \"$npm_package_config_rootDir\"",
 		"lintCfgTsAdd": "git subtree add -P lintcfg-ts --squash \"$npm_package_config_lintCfgSubtreeRepoBasePath\"ts master && ln -s lintcfg-ts/.eslintrc.js .eslintrc.js",

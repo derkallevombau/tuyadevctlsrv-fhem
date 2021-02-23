@@ -1,109 +1,208 @@
-/**
- * @file cmdline-util.js
- * Created on: Nov 13 2019
- * @author derkallevombau
- */
+/*
+* cmdline-util.ts
+* Author: derkallevombau
+* Created: Nov 13, 2019
+*/
 
-class CmdLineUtil
+/* eslint-disable tsdoc/syntax */
+
+export interface CmdLineOption
 {
 	/**
-	 * Creates and initialises a new instance of CmdLineUtil
-	 * @param {...Option} options
-	 * @typedef {object} Option An object describing a command line option.
-	 * @property {string} Option.names One (or more, space-separated) names(s), e. g. '-d' or '--debug -d'.
-	 * @property {string} [Option.helpNames] One (or more, space-separated) names(s) that will cause an options summary
-	 * to be printed if your program is executed with any of these. If this string contains the word 'noopt', a summary
-	 * will be printed if your program is executed without arguments; useful if your program needs at least one argument
-	 * in order to do its job. If you set this to the empty string, help will be disabled. Defaults to '--help -h'.
-	 * @property {string} [Option.description] A description of the option's effect and the format of the value to be specified, if any.
+	 * One (or more, space-separated) names(s), e. g. '-d' or '--debug -d'.
+	 */
+	names: string,
+
+	/**
+	 * A description of the option's effect and the format of the value to be specified, if any.\
 	 * Used to print a summary when your program is executed with help option.
-	 * @property {RegExp} [Option.validationRegExp] For an option that needs a value:
+	 */
+	description?: string,
+
+	/**
+	 * For an option that needs a value:\
 	 * A regular expression which, if supplied, the supplied value will be matched against.
 	 * An exception will be thrown if validation fails.
-	 * @property {Function} [Option.processValue] For an option that needs a value: A function that takes and processes the supplied value.
-	 * @property {Function} [Option.action] For an option that doesn't need a value: A function that performs the appropriate action.
 	 */
-	constructor(logger, ...options)
-	{
-		/**
-		 * @private
-		 */
-		this.logger = logger;
+	valueValidationRegExp?: RegExp,
 
-		/**
-		 * @private
-		 */
-		this.opts = options;
+	/**
+	 * For an option that needs a value:\
+	 * A function that takes and processes the supplied value.
+	 */
+	processValue?: (value: string) => void,
+
+	/**
+	 * For an option that doesn't need a value:\
+	 * A function that performs the appropriate action.
+	 */
+	action?: () => void
+}
+
+interface CmdLineOptionInternal extends CmdLineOption
+{
+	/**
+	 * Supplied variant of option, if any.
+	 */
+	variant?: string,
+
+	/**
+	 * Value supplied for option, if any.
+	 */
+	value?: string
+}
+
+export default class CmdLineUtil
+{
+	private optionRequired: boolean;
+	private helpPrinted: () => void;
+	private opts: CmdLineOption[];
+
+	/**
+	 * Creates and initialises a new instance of CmdLineUtil.
+	 * @param helpPrinted - A function that will be called after your program has been invoked with '-h'
+	 * or '--help' and help has been printed, so your program can do cleanup and exit gracefully.
+	 * @param options - A `CmdLineOption` for each option your program shall understand.
+	 */
+	constructor(helpPrinted: () => void, ...options: CmdLineOption[]);
+
+	/**
+	 * Creates and initialises a new instance of CmdLineUtil.
+	 * @param helpPrinted - A function that will be called after your program has been invoked with '-h'
+	 * or '--help' and help has been printed, so your program can do cleanup and exit gracefully.
+	 * @param options - A `CmdLineOption` for each option your program shall understand.
+	 */
+	constructor(optionRequired: boolean, helpPrinted: () => void, ...options: CmdLineOption[]);
+
+	constructor(...args: any[]) // Common ctor
+	{
+		if (args.length === 3) // Ctor 2
+		{
+			this.optionRequired = args[0] as boolean;
+			this.helpPrinted = args[1] as () => void;
+			this.opts = args[2] as CmdLineOption[];
+		}
+		else if (args.length === 2) // Ctor 1
+		{
+			this.optionRequired = false;
+			this.helpPrinted = args[0] as () => void;
+			this.opts = args[1] as CmdLineOption[];
+		}
 	}
 
-	process()
+	/**
+	 * @throws `Error` with code 'ECMDLINE'.
+	 */
+	process(): void
 	{
-		for (const opt of this.opts) if (opt.action && opt.processValue)
-			this.error(`${opt.names}: Option.action and Option.processValue are mutually exclusive`);
+		for (const opt of this.opts)
+		{
+			if (opt.action && opt.processValue)
+			{
+				this.error(`${opt.names}: CmdLineOption.action and CmdLineOption.processValue are mutually exclusive.`);
+			}
 
-		let optToStoreValueFor;
+			if (!opt.action && !opt.processValue)
+			{
+				this.error(`${opt.names}: Neither CmdLineOption.action nor CmdLineOption.processValue specified, option will have no effect.`);
+			}
+		}
 
-		for (const arg of process.argv.slice(2))
+		// process.argv[0] is the node executable,
+		// process.argv[1] is the script,
+		// process.argv[3] is the first command line option,
+		// so we remove the first two elements.
+		const args = process.argv.slice(2);
+
+		if (this.optionRequired && !args.length)
+		{
+			this.printHelp();
+
+			this.error('No option specified.');
+		}
+
+		let optToStoreValueFor: CmdLineOptionInternal;
+
+		// Store options and arguments
+
+		for (const arg of args)
 		{
 			// Check if arg is a valid option name.
 			// As opposed to Perl, RegExp literals in JS don't support interpolation,
 			// thus we use 'RegExp()' which can take a string.
-			const opt = this.opts.find(opt => ` ${opt.names} `.match(RegExp(` ${arg} `)));
+			// N.B.: RegExp#exec is faster than String#match and both work the same when not using the /g flag.
+			//       RegExp#test should be even faster.
+			const opt = this.opts.find(opt => RegExp(` ${arg} `).test(` ${opt.names} `)) as CmdLineOptionInternal;
 
 			if (!opt && !optToStoreValueFor)
 			{
-				this.error(`Invalid command line argument: '${arg}'`);
+				// Check for help option, but only accept it if we have a helpPrinted callback.
+				if (this.helpPrinted && RegExp(` ${arg} `).test(' -h --help '))
+				{
+					this.printHelp();
+					this.helpPrinted();
+
+					return;
+				}
+
+				this.error(`Invalid command line option: '${arg}'.`);
 			}
 
 			if (!opt) // arg is value for optToStoreValueFor, store it.
 			{
-				// @ts-ignore
+				// Match arg against regexp, if any.
+				if (optToStoreValueFor.valueValidationRegExp && !RegExp(opt.valueValidationRegExp).test(arg))
+				{
+					this.error(`Invalid value '${arg}' for option '${opt.variant}'.`);
+				}
+
 				optToStoreValueFor.value = arg;
-				optToStoreValueFor       = undefined;
+				optToStoreValueFor = undefined;
 			}
 			else // arg is option
 			{
-				// @ts-ignore
-				opt.supplied = arg; // Store supplied variant for error message, if any.
+				opt.variant = arg; // Store supplied option variant for error message, if any.
 
-				if (opt.processValue) // arg is option that needs a value, store it in next iteration.
+				if (opt.processValue || opt.valueValidationRegExp) // arg is option that needs a value, store it in next iteration.
 				{
 					optToStoreValueFor = opt;
 					continue;
 				}
-				// else arg is option that doesn't need a value, nothing to do
+				// else arg is option that doesn't need a value, nothing to do here.
 			}
 		}
 
-		for (const opt of this.opts)
-		{
-			// @ts-ignore
-			if (!opt.supplied) continue;
+		// Execute supplied functions
 
-			// @ts-ignore
+		for (const opt of this.opts as CmdLineOptionInternal[])
+		{
+			if (!opt.variant) continue;
+
 			if (opt.processValue && opt.value === undefined)
 			{
-				// @ts-ignore
-				this.error(`No value specified for option '${opt.supplied}'`);
+				this.error(`No value specified for option '${opt.variant}'.`);
 			}
-			// @ts-ignore
 			else if (opt.processValue) opt.processValue(opt.value);
 			else if (opt.action) opt.action();
 		}
 	}
 
+	private printHelp()
+	{
+		console.log('Sorry, help has not been implemented yet.');
+	}
+
 	/**
 	 * Throws an `Error` object constructed
-	 * with `message` and code property set to 'ECMDLINE'.
-	 * @param {string} message
+	 * with `message` and `code` property set to 'ECMDLINE'.
+	 * @param message - Error message
 	 */
-	error(message)
+	private error(message: string): void
 	{
 		const e = new Error(message);
-		// @ts-ignore
-		e.code = 'ECMDLINE';
+		// Solution from StackOverflow to access a non-existing property like in JS.
+		// eslint-disable-next-line @typescript-eslint/no-unsafe-member-access
+		(e as any).code = 'ECMDLINE';
 		throw e;
 	}
 }
-
-module.exports = CmdLineUtil;

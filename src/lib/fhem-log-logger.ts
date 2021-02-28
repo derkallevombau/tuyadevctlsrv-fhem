@@ -14,15 +14,17 @@ import strftime = require('strftime');
  * Since `console` outputs to stdout/stderr and these
  * are redirected to FHEM log, it uses the same formatting.
  */
-export default class FhemLogLogger
+const FhemLogLogger =
 {
-	static debug(message: any, ...optionalParams: any[]): void { console.debug(strftime('%Y.%m.%d %H:%M:%S'), '4:', 'tuyadevctlsrv-fhem:', message, ...optionalParams); }
-	static info(message: any, ...optionalParams: any[]): void  { console.info(strftime('%Y.%m.%d %H:%M:%S'), '3:', 'tuyadevctlsrv-fhem:', message, ...optionalParams); }
-	static warn(message: any, ...optionalParams: any[]): void  { console.warn(strftime('%Y.%m.%d %H:%M:%S'), '2:', 'tuyadevctlsrv-fhem:', message, ...optionalParams); }
-	static error(message: any, ...optionalParams: any[]): void { console.error(strftime('%Y.%m.%d %H:%M:%S'), '1:', 'tuyadevctlsrv-fhem:', message, ...optionalParams); }
-	static fatal(message: any, ...optionalParams: any[]): void { console.error(strftime('%Y.%m.%d %H:%M:%S'), '1:', 'tuyadevctlsrv-fhem:', message, ...optionalParams); }
+	debug(message: any, ...args: any[]): void { console.debug(strftime('%Y.%m.%d %H:%M:%S'), '4:', 'tuyadevctlsrv-fhem:', message, ...args); },
+	info(message: any, ...args: any[]): void { console.info(strftime('%Y.%m.%d %H:%M:%S'), '3:', 'tuyadevctlsrv-fhem:', message, ...args); },
+	warn(message: any, ...args: any[]): void { console.warn(strftime('%Y.%m.%d %H:%M:%S'), '2:', 'tuyadevctlsrv-fhem:', message, ...args); },
+	error(message: any, ...args: any[]): void { console.error(strftime('%Y.%m.%d %H:%M:%S'), '1:', 'tuyadevctlsrv-fhem:', message, ...args); },
+	fatal(message: any, ...args: any[]): void { console.error(strftime('%Y.%m.%d %H:%M:%S'), '1:', 'tuyadevctlsrv-fhem:', message, ...args); },
 
 	// N.B.: - Using "String literal types" available since TS 4.1.
-	//       - We can access static class mebers via subscript operator like with "legacy" objects, even from inside the class.
-	static log(level: 'debug' | 'info' | 'warn' | 'error' | 'fatal', message: any, ...optionalParams: any[]): void { FhemLogLogger[level](message, ...optionalParams); }
-}
+	//       - We can access the object's properties from inside the object via the variable we assigned it to.
+	log(level: 'debug' | 'info' | 'warn' | 'error' | 'fatal', message: any, ...args: any[]): void { FhemLogLogger[level](message, ...args); }
+};
+
+export default FhemLogLogger;

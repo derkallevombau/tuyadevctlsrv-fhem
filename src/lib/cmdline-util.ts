@@ -59,6 +59,12 @@ export default class CmdLineUtil
 	private opts: CmdLineOption[];
 
 	/**
+	 * Creates and initialises a new instance of CmdLineUtil without help support.
+	 * @param options - A `CmdLineOption` for each option your program shall understand.
+	 */
+	constructor(...options: CmdLineOption[]);
+
+	/**
 	 * Creates and initialises a new instance of CmdLineUtil.
 	 * @param helpPrinted - A function that will be called after your program has been invoked with '-h'
 	 * or '--help' and help has been printed, so your program can do cleanup and exit gracefully.
@@ -68,6 +74,7 @@ export default class CmdLineUtil
 
 	/**
 	 * Creates and initialises a new instance of CmdLineUtil.
+	 * @param optionRequired - If `true` and no option(s) have been supplied, an error will be thrown.
 	 * @param helpPrinted - A function that will be called after your program has been invoked with '-h'
 	 * or '--help' and help has been printed, so your program can do cleanup and exit gracefully.
 	 * @param options - A `CmdLineOption` for each option your program shall understand.
@@ -76,17 +83,23 @@ export default class CmdLineUtil
 
 	constructor(...args: any[]) // Common ctor
 	{
-		if (args.length === 3) // Ctor 2
+		switch (args.length)
 		{
-			this.optionRequired = args[0] as boolean;
-			this.helpPrinted = args[1] as () => void;
-			this.opts = args[2] as CmdLineOption[];
-		}
-		else if (args.length === 2) // Ctor 1
-		{
-			this.optionRequired = false;
-			this.helpPrinted = args[0] as () => void;
-			this.opts = args[1] as CmdLineOption[];
+			case 1: // Ctor 1
+				this.optionRequired = false;
+				this.opts = args[0] as CmdLineOption[];
+
+				break;
+			case 2: // Ctor 2
+				this.optionRequired = false;
+				this.helpPrinted = args[0] as () => void;
+				this.opts = args[1] as CmdLineOption[];
+
+				break;
+			case 3: // Ctor 3
+				this.optionRequired = args[0] as boolean;
+				this.helpPrinted = args[1] as () => void;
+				this.opts = args[2] as CmdLineOption[];
 		}
 	}
 

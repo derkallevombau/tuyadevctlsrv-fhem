@@ -210,7 +210,7 @@ export default class CmdLineUtil
 	 * with `message` and `code` property set to 'ECMDLINE'.
 	 * @param message - Error message
 	 */
-	private error(message: string): void
+	error(message: string): void
 	{
 		const e = new Error(message);
 		// Solution from StackOverflow to access a non-existing property like in JS.

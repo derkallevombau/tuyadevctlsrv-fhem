@@ -1,5 +1,5 @@
 /*
- * initializers.ts
+ * object-initializers.ts
  * Author: derkallevombau
  * Created: Mar 17, 2021
  */
@@ -44,12 +44,14 @@ export type Initialiser<T> = { [K in keyof T]: T[K] }; // = Pick<T, keyof T>
  * excluding those in union `Keys`.\
  * `T` can be a literal object type, an interface or a class.
  */
-// N.B.: 'extends' in 'Exclude<T, U> = T extends U ? never: T'
-// is distributive since the operands are type parameters!
-// This means that the expression is evaluated for each possible
-// combination of union members of T and U, and the result is a new
-// union consisting of these partial results.
-export type InitialiserExclude<T, Keys extends keyof T> = { [K in Exclude<keyof T, Keys>]: T[K] };
+// N.B.: - 'extends' in 'Exclude<T, U> = T extends U ? never: T'
+//         is distributive since the operands are type parameters!
+//         This means that the expression is evaluated for each possible
+//         combination of union members of T and U, and the result is a new
+//         union consisting of these partial results.
+//       - We must use "Type remapping via as" here: '{ [K in Exclude<keyof T, Keys>]: T[K] }'
+//         would remove the optional modifier '?' and probably 'readonly' too (not tested).
+export type InitialiserExclude<T, Keys extends keyof T> = { [K in keyof T as Exclude<K, Keys>]: T[K] };
 
 /**
  * Creates an initialiser for the public properties of type `T`,
